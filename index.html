@@ -75,7 +75,7 @@
     <summary>说明 / 发送记录</summary>
     <p class="hint">
       移调用的是 MIDI 标准指令“Master Coarse Tune”（F0 7F 7F 04 04 00 xx F7）。Pa300 固件会把它接到琴的主移调上，效果跟按面板的 TRANSPOSE 键一样。<br>
-      不动作就检查：琴上 GLOBAL → General Controls → Lock 里，Master Transpose 那把锁要打开。<br>
+      不动作按顺序查：① 琴上 GLOBAL → General Controls → Lock，把 Master Transpose 锁打开；② GLOBAL → Tuning → Transpose Control，“Transpose applies to Style and Kbd tracks”不要选 Off；③ GLOBAL → MIDI → Filters，MIDI IN 不要过滤 SysExcl；④ 一加手机设置里打开“OTG 连接”（闲置 10 分钟会自动关）。<br>
       直接点数字是“跳到这个调”，不是一格一格加，所以手机显示的数字就是琴上的移调。
     </p>
     <div class="row"><label><input type="checkbox" id="compat" checked> 兼容模式（同时按 16 个设备号补发，不动作时保持勾选）</label></div>
@@ -125,7 +125,7 @@ function render(){
 
 function buildUI(){
   const g=$('grid');
-  for(const v of [-5,-4,-3,-2,-1,0,1,2,3,4,5,6,-6,-7,7]){
+  for(let v=-7; v<=7; v++){
     const b=document.createElement('button');
     b.textContent=v>0?'+'+v:String(v); b.dataset.v=v;
     b.onclick=()=>setTranspose(v); g.appendChild(b);
