@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#111318">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<title>Pa300 移调器</title>
+<style>
+  :root{--bg:#111318;--card:#1c1f27;--fg:#f2f3f5;--dim:#8b90a0;--acc:#ff9f1c;--ok:#2ecc71;--bad:#ff5c5c}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,"PingFang SC","Noto Sans SC",sans-serif;user-select:none}
+  header{display:flex;align-items:center;justify-content:space-between;padding:12px 14px}
+  h1{font-size:18px;margin:0}
+  #status{font-size:13px;padding:6px 10px;border-radius:14px;background:#2a2e38;color:var(--dim)}
+  #status.ok{background:#173d27;color:var(--ok)} #status.bad{background:#3d1a1a;color:var(--bad)}
+  .card{background:var(--card);margin:10px 12px;border-radius:14px;padding:12px}
+  .big{display:flex;align-items:center;justify-content:center;gap:14px}
+  .big .val{font-size:64px;font-weight:700;min-width:150px;text-align:center;font-variant-numeric:tabular-nums}
+  .big .key{font-size:16px;color:var(--dim);text-align:center}
+  button{font:inherit;color:var(--fg);background:#2a2e38;border:0;border-radius:12px;padding:0;cursor:pointer}
+  button:active{transform:scale(.96);background:#3a3f4c}
+  .step{width:70px;height:70px;font-size:34px;font-weight:700}
+  .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+  .grid button{height:54px;font-size:20px;font-weight:600}
+  .grid button.cur{background:var(--acc);color:#111}
+  .grid button.zero{grid-column:span 1}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .row label{color:var(--dim);font-size:14px}
+  select{font:inherit;background:#2a2e38;color:var(--fg);border:0;border-radius:8px;padding:6px 8px}
+  .sgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  .sgrid button{height:50px;font-size:15px}
+  .sgrid button.start{background:#1f4d33}
+  details summary{color:var(--dim);font-size:14px;cursor:pointer;padding:4px 0}
+  #log{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);white-space:pre-wrap;max-height:140px;overflow:auto;margin-top:6px}
+  .hint{font-size:13px;color:var(--dim);line-height:1.6}
+  #connect{width:100%;height:48px;font-size:17px;background:var(--acc);color:#111;font-weight:700}
+</style>
+</head>
+<body>
+<header><h1>Pa300 一键移调</h1><span id="status">未连接</span></header>
+
+<div class="card" id="connectCard">
+  <button id="connect">连接电子琴</button>
+  <p class="hint">手机用 OTG 线插琴背后的 USB TO HOST（方口）。点上面按钮，浏览器问“控制 MIDI 设备”时点允许。</p>
+</div>
+
+<div class="card">
+  <div class="big">
+    <button class="step" id="down">♭</button>
+    <div><div class="val" id="val">0</div><div class="key" id="keyname">C 调</div></div>
+    <button class="step" id="up">♯</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="grid" id="grid"></div>
+  <div class="row" style="margin-top:10px">
+    <label>原调（弹的指法）</label>
+    <select id="base"></select>
+  </div>
+</div>
+
+<div class="card">
+  <details id="styleBox">
+    <summary>伴奏遥控（可选，需要琴上把 MIDI 预设设成 Tablet）</summary>
+    <div class="row" style="margin:8px 0"><label>Control 通道</label><select id="ctlch"></select></div>
+    <div class="sgrid" id="sgrid"></div>
+  </details>
+</div>
+
+<div class="card">
+  <details>
+    <summary>说明 / 发送记录</summary>
+    <p class="hint">
+      移调用的是 MIDI 标准指令“Master Coarse Tune”（F0 7F 7F 04 04 00 xx F7）。Pa300 固件会把它接到琴的主移调上，效果跟按面板的 TRANSPOSE 键一样。<br>
+      不动作就检查：琴上 GLOBAL → General Controls → Lock 里，Master Transpose 那把锁要打开。<br>
+      直接点数字是“跳到这个调”，不是一格一格加，所以手机显示的数字就是琴上的移调。
+    </p>
+    <div class="row"><label><input type="checkbox" id="compat" checked> 兼容模式（同时按 16 个设备号补发，不动作时保持勾选）</label></div>
+    <div id="log"></div>
+  </details>
+</div>
+
+<script>
+const NAMES=['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+const MIN=-11, MAX=11;
+let access=null, outs=[], cur=0;
+const $=id=>document.getElementById(id);
+
+function log(s){const l=$('log');l.textContent=(new Date().toLocaleTimeString()+'  '+s+'\n'+l.textContent).slice(0,4000);}
+function hex(a){return a.map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');}
+function setStatus(t,cls){const s=$('status');s.textContent=t;s.className=cls||'';}
+
+function send(bytes){
+  if(!outs.length){log('未连接，没发出去: '+hex(bytes));setStatus('未连接','bad');return false;}
+  for(const o of outs){try{o.send(bytes);}catch(e){log('发送失败 '+o.name+': '+e.message);setStatus('发送失败','bad');return false;}}
+  log('发出 → '+hex(bytes));
+  return true;
+}
+
+function coarseTune(semi,dev){ // MIDI Master Coarse Tune: F0 7F dev 04 04 LSB MSB F7，MSB = 0x40 + 半音
+  return [0xF0,0x7F,dev,0x04,0x04,0x00,0x40+semi,0xF7];
+}
+
+function setTranspose(v){
+  v=Math.max(MIN,Math.min(MAX,v));
+  // 先发 7F（全体设备），再按 Global 通道 0x00-0x0F 各补一条。
+  // 固件收到后与当前移调比较，相同就不动，所以重复发送没有副作用。
+  send(coarseTune(v,0x7F));
+  if($('compat').checked){ for(let d=0;d<16;d++) send(coarseTune(v,d)); }
+  cur=v;
+  render();
+  try{localStorage.setItem('pa_tr',String(cur));}catch(e){}
+}
+
+function render(){
+  $('val').textContent=(cur>0?'+':'')+cur;
+  const base=+$('base').value;
+  const k=NAMES[((base+cur)%12+12)%12];
+  $('keyname').textContent=NAMES[base]+' 指法 → 实际 '+k+' 调';
+  document.querySelectorAll('#grid button').forEach(b=>b.classList.toggle('cur',+b.dataset.v===cur));
+}
+
+function buildUI(){
+  const g=$('grid');
+  for(const v of [-5,-4,-3,-2,-1,0,1,2,3,4,5,6,-6,-7,7]){
+    const b=document.createElement('button');
+    b.textContent=v>0?'+'+v:String(v); b.dataset.v=v;
+    b.onclick=()=>setTranspose(v); g.appendChild(b);
+  }
+  const base=$('base');
+  NAMES.forEach((n,i)=>{const o=document.createElement('option');o.value=i;o.textContent=n;base.appendChild(o);});
+  base.value=localStorage.getItem('pa_base')||'0';
+  base.onchange=()=>{localStorage.setItem('pa_base',base.value);render();};
+  const ch=$('ctlch');
+  for(let i=1;i<=16;i++){const o=document.createElement('option');o.value=i;o.textContent=i;ch.appendChild(o);}
+  ch.value=localStorage.getItem('pa_ch')||'16';
+  ch.onchange=()=>localStorage.setItem('pa_ch',ch.value);
+  // Pa300 手册印刷页 378：Control 通道上的 Program Change
+  const S=[['开始/停止',103,'start'],['前奏1',80],['前奏2',81],['前奏3',82],
+           ['变奏1',83],['变奏2',84],['变奏3',85],['变奏4',86],
+           ['过门1',87],['过门2',88],['过门3',89],['过门4',90],
+           ['Break',91],['尾奏1',92],['尾奏2',93],['尾奏3',94]];
+  const sg=$('sgrid');
+  for(const [t,pc,cls] of S){
+    const b=document.createElement('button');b.textContent=t;if(cls)b.className=cls;
+    b.onclick=()=>send([0xC0|((+$('ctlch').value-1)&15),pc]);
+    sg.appendChild(b);
+  }
+  $('up').onclick=()=>setTranspose(cur+1);
+  $('down').onclick=()=>setTranspose(cur-1);
+  $('connect').onclick=connect;
+  cur=+(localStorage.getItem('pa_tr')||0);
+  render();
+}
+
+function refreshPorts(){
+  outs=[];
+  if(!access) return;
+  const all=[...access.outputs.values()];
+  // 优先选名字带 Pa/KORG/SOUND 的口；没有就全发（手机上通常只有琴一个口）
+  const pa=all.filter(o=>/pa\s?\d|korg|sound/i.test(o.name||''));
+  outs=pa.length?pa:all;
+  if(outs.length){setStatus('已连接 '+outs.map(o=>o.name).join(', '),'ok');$('connectCard').style.display='none';}
+  else{setStatus('没找到电子琴','bad');$('connectCard').style.display='';}
+  log('输出口: '+(all.map(o=>o.name).join(' | ')||'无'));
+}
+
+async function connect(){
+  if(!navigator.requestMIDIAccess){
+    setStatus('浏览器不支持','bad');
+    alert('这个浏览器不支持 Web MIDI。请用安卓版 Chrome 打开这个网址（苹果 Safari 不支持）。');
+    return;
+  }
+  try{
+    access=await navigator.requestMIDIAccess({sysex:true});
+    access.onstatechange=refreshPorts;
+    refreshPorts();
+  }catch(e){
+    setStatus('没有权限','bad');
+    log('requestMIDIAccess 失败: '+e.message);
+    alert('需要允许“控制 MIDI 设备（含系统专用信息）”权限，移调靠这个。');
+  }
+}
+
+buildUI();
+if(navigator.requestMIDIAccess && navigator.permissions){
+  navigator.permissions.query({name:'midi',sysex:true}).then(p=>{if(p.state==='granted')connect();}).catch(()=>{});
+}
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}
+</script>
+</body>
+</html>
